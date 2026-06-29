@@ -1,30 +1,93 @@
-"""Lettura degli indirizzi dei DESTINATARI.
+"""Lettura degli indirizzi — VERSIONE POTENTE (da usare sul PC).
 
-Versione LEGGERA (adatta all'hosting cloud gratuito, poca memoria):
-- Immagini e fotogrammi dei video: Google Gemini (AI con visione).
-- Testo scritto a mano dall'utente: parser locale (senza chiamate all'AI).
+- FOTO singole: prima l'AI (Gemini) se configurata, con RISERVA l'OCR offline
+  (EasyOCR) se l'AI non è disponibile o non trova nulla.
+- VIDEO: OCR offline (vedi video.py), senza limiti.
+- TESTO scritto a mano: parser locale.
 
-Niente librerie pesanti (niente EasyOCR/PyTorch).
+Usa le librerie pesanti (EasyOCR). Funziona anche senza chiave Gemini.
 """
+import io
 import json
 import re
 import threading
 import time
 
+import numpy as np
+from PIL import Image, ImageOps
+
 import config
 
 
 class AIError(Exception):
-    """Problema con l'AI (chiave non valida, limite raggiunto, rete)."""
+    """Problema con l'AI (chiave non valida, limite, rete). Qui di solito si ripiega sull'OCR."""
 
 
 # ----------------------------------------------------------------------
-#  AI (Gemini) — lettura delle immagini
+#  OCR offline (EasyOCR) — caricato in modo pigro
+# ----------------------------------------------------------------------
+_reader = None
+
+
+def is_ocr_ready() -> bool:
+    return _reader is not None
+
+
+def _get_reader():
+    global _reader
+    if _reader is None:
+        import easyocr
+
+        _reader = easyocr.Reader(config.ocr_langs_list(), gpu=False)
+    return _reader
+
+
+def _preprocess(image_bytes: bytes):
+    img = Image.open(io.BytesIO(image_bytes))
+    try:
+        img = ImageOps.exif_transpose(img)
+    except Exception:
+        pass
+    img = img.convert("RGB")
+    w, h = img.size
+    lato = max(w, h)
+    if lato and lato < 1600:
+        f = 1600.0 / lato
+        img = img.resize((max(1, int(w * f)), max(1, int(h * f))))
+    return np.array(img)
+
+
+def read_image_text(image_bytes: bytes) -> str:
+    arr = _preprocess(image_bytes)
+    reader = _get_reader()
+    blocchi = reader.readtext(arr, detail=0, paragraph=True)
+    return "\n".join(blocchi)
+
+
+def _upscale_array(arr):
+    h, w = arr.shape[:2]
+    lato = max(h, w)
+    if lato and lato < 1600:
+        f = 1600.0 / lato
+        img = Image.fromarray(arr).resize((max(1, int(w * f)), max(1, int(h * f))))
+        return np.array(img)
+    return arr
+
+
+def read_array_text(arr_rgb) -> str:
+    """OCR di un fotogramma già in memoria (numpy RGB). Usato dai video."""
+    reader = _get_reader()
+    blocchi = reader.readtext(_upscale_array(arr_rgb), detail=0, paragraph=True)
+    return "\n".join(blocchi)
+
+
+# ----------------------------------------------------------------------
+#  AI (Gemini) per le FOTO
 # ----------------------------------------------------------------------
 _client = None
 _ai_lock = threading.Lock()
 _ai_ultima = [0.0]
-_AI_MIN_INTERVALLO = 4.5  # ~15 richieste/minuto del piano gratuito
+_AI_MIN_INTERVALLO = 4.5
 _last_debug = [""]
 
 _AI_PROMPT = """Questa è la foto di una o più etichette di spedizione di pacchi, \
@@ -44,13 +107,11 @@ Se non vedi nessun indirizzo di destinatario, rispondi: []
 
 
 def image_has_ai() -> bool:
-    """True se è configurata una chiave Gemini."""
     k = config.GEMINI_API_KEY
     return bool(k) and "incolla" not in k
 
 
 def last_debug() -> str:
-    """Info sull'ultima lettura (per la modalità /debug)."""
     return _last_debug[0]
 
 
@@ -64,7 +125,6 @@ def _get_ai_client():
 
 
 def _ai_addresses(image_bytes: bytes, mime_type: str = "image/jpeg"):
-    """Estrae gli indirizzi da un'immagine con Gemini. Può sollevare AIError."""
     from google.genai import types
 
     client = _get_ai_client()
@@ -92,10 +152,10 @@ def _ai_addresses(image_bytes: bytes, mime_type: str = "image/jpeg"):
 def _traduci_errore(e: Exception) -> AIError:
     s = str(e).lower()
     if any(k in s for k in ("429", "resource_exhausted", "quota", "rate limit")):
-        return AIError("Limite gratuito dell'AI raggiunto: aspetta circa un minuto.")
+        return AIError("limite gratuito dell'AI raggiunto")
     if any(k in s for k in ("api key", "api_key", "permission", "401", "403", "unauthenticated")):
-        return AIError("Chiave Gemini non valida: controlla GEMINI_API_KEY.")
-    return AIError("AI non raggiungibile al momento.")
+        return AIError("chiave Gemini non valida")
+    return AIError("AI non raggiungibile")
 
 
 def _parse_json_list(text: str):
@@ -120,19 +180,25 @@ def _parse_json_list(text: str):
 
 
 def image_addresses(image_bytes: bytes, mime_type: str = "image/jpeg"):
-    """Legge gli indirizzi da una FOTO con l'AI."""
-    indirizzi = _ai_addresses(image_bytes, mime_type)
-    _last_debug[0] = "Metodo: AI (Gemini)\n" + "\n".join(indirizzi)
-    return indirizzi
+    """FOTO: prima l'AI (se configurata), con riserva l'OCR offline. Non solleva
+    errori: se l'AI non va, ripiega sull'OCR."""
+    if image_has_ai():
+        try:
+            indirizzi = _ai_addresses(image_bytes, mime_type)
+            if indirizzi:
+                _last_debug[0] = "Metodo: AI (Gemini)\n" + "\n".join(indirizzi)
+                return indirizzi
+        except AIError as e:
+            _last_debug[0] = f"AI non disponibile ({e}); uso l'OCR offline."
 
-
-def frame_addresses(jpeg_bytes: bytes):
-    """Legge gli indirizzi da un singolo fotogramma di video (JPEG) con l'AI."""
-    return _ai_addresses(jpeg_bytes, "image/jpeg")
+    raw = read_image_text(image_bytes)
+    metodo = "OCR offline" if not image_has_ai() else "OCR offline (riserva)"
+    _last_debug[0] = f"Metodo: {metodo}\n{raw}"
+    return parse_addresses(raw)
 
 
 # ----------------------------------------------------------------------
-#  Parser locale per il TESTO scritto dall'utente (senza AI)
+#  Parser locale per il TESTO scritto dall'utente
 # ----------------------------------------------------------------------
 _STREET_KW = [
     "via", "viale", "v.le", "vle", "piazza", "piazzale", "p.za", "p.zza", "pza",
@@ -146,15 +212,44 @@ _STREET_RE = re.compile(
 )
 _CAP_RE = re.compile(r"\b\d{5}\b")
 
+_REC_MARKERS = [
+    "destinatario", "consegnare a", "consegna a", "destinazione", "spedire a",
+    "deliver to", "ship to",
+]
+_SND_MARKERS = ["mittente", "sender"]
+
 
 def _has_street(testo: str) -> bool:
     return bool(_STREET_RE.search(testo))
 
 
+def _prefer_recipient(righe):
+    basse = [r.lower() for r in righe]
+    inizio = 0
+    for i, r in enumerate(basse):
+        if any(m in r for m in _REC_MARKERS):
+            inizio = i
+            break
+    selezione = righe[inizio:] if inizio else list(righe)
+
+    risultato, salta = [], False
+    for r in selezione:
+        rl = r.lower()
+        if any(m in rl for m in _SND_MARKERS):
+            salta = True
+            continue
+        if salta:
+            if _CAP_RE.search(r):
+                salta = False
+            continue
+        risultato.append(r)
+    return risultato or selezione or righe
+
+
 def parse_addresses(testo: str):
-    """Individua gli indirizzi dentro un testo (per il testo digitato a mano)."""
     righe = [re.sub(r"\s+", " ", r).strip(" .,;:-|") for r in testo.splitlines()]
     righe = [r for r in righe if r]
+    righe = _prefer_recipient(righe)
 
     indirizzi = []
     buf = []
@@ -187,5 +282,4 @@ def parse_addresses(testo: str):
 
 
 def extract_from_text(testo: str):
-    """Estrae gli indirizzi da un testo incollato/scritto dall'utente."""
     return parse_addresses(testo)
