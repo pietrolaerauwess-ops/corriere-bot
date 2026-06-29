@@ -251,6 +251,16 @@ def _prefer_recipient(righe):
     return risultato or selezione or righe
 
 
+def _clean_address(addr: str) -> str:
+    """Toglie il nome di persona prima della via (es. 'Paola Riva Via Adige 5' ->
+    'Via Adige 5') e la parola 'Italy/Italia' finale, per aiutare il geocoding."""
+    m = _STREET_RE.search(addr)
+    if m and m.start() > 0:
+        addr = addr[m.start():].strip()
+    addr = re.sub(r"[\s,]+(italy|italia)\s*$", "", addr, flags=re.IGNORECASE).strip()
+    return addr
+
+
 def parse_addresses(testo: str):
     righe = [re.sub(r"\s+", " ", r).strip(" .,;:-|") for r in testo.splitlines()]
     righe = [r for r in righe if r]
@@ -279,6 +289,7 @@ def parse_addresses(testo: str):
 
     visti, risultato = set(), []
     for ind in indirizzi:
+        ind = _clean_address(ind)
         chiave = ind.lower()
         if chiave not in visti:
             visti.add(chiave)
