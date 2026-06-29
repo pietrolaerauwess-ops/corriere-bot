@@ -1,0 +1,23 @@
+========================================================
+  VERSIONE LEGGERA — PER IL CLOUD (sempre online)
+========================================================
+
+Cosa fa di speciale questa versione:
+- Legge FOTO e VIDEO solo con l'AI (Gemini). Niente librerie pesanti, cosi'
+  entra nei servizi di hosting gratuiti (poca memoria).
+- E' la "sorgente" del file  corriere-bot-online.zip  (quello che carichi
+  sul servizio online).
+
+Come metterla online:
+- Non serve aprire questa cartella a mano.
+- Carica il file  corriere-bot-online.zip  sul servizio di hosting.
+- Segui la guida:  DEPLOY-FREE.md
+
+Se in futuro devi rigenerare lo ZIP, comprimi questi file di questa cartella:
+  bot.py config.py extractor.py geocoder.py maps_links.py optimizer.py
+  video.py requirements.txt Procfile
+
+------------------------------------------------------------
+La versione da far girare sul PC (con riserva offline) e' nella cartella:
+  corriere-bot
+------------------------------------------------------------
