@@ -90,19 +90,20 @@ _ai_ultima = [0.0]
 _AI_MIN_INTERVALLO = 4.5
 _last_debug = [""]
 
-_AI_PROMPT = """Questa è la foto di una o più etichette di spedizione di pacchi, \
-oppure lo schermo di un palmare/gestionale con indirizzi di consegna.
+_AI_PROMPT = """Questa immagine può essere:
+(a) l'etichetta di un pacco, oppure
+(b) lo schermo di un'app/palmare/navigatore con una LISTA di tappe o consegne.
 
-Estrai SOLO l'indirizzo del DESTINATARIO (la persona o azienda a cui va consegnato \
-il pacco; spesso indicato con "Destinatario", "Consegnare a", "A:").
-IGNORA: mittente, codici a barre, numeri di tracking/spedizione, peso, logo e nome \
-del corriere, telefoni, prezzi.
+Estrai gli indirizzi di consegna così:
+- Se è un'ETICHETTA di pacco: prendi SOLO l'indirizzo del DESTINATARIO (ignora il \
+mittente, i codici a barre, il tracking, il peso, il logo del corriere).
+- Se è una LISTA di tappe/consegne: prendi l'indirizzo di OGNI tappa.
 
-Per ogni consegna fornisci l'indirizzo completo: via/piazza e numero civico, CAP, \
-città e provincia se presenti.
+Per ogni indirizzo dai la forma completa: via/piazza/corso e numero civico, CAP, \
+città e provincia se presenti. NON includere nomi di persona.
 Rispondi ESCLUSIVAMENTE con un array JSON di stringhe, senza altro testo.
-Esempio: ["Via Roma 12, 20121 Milano MI"]
-Se non vedi nessun indirizzo di destinatario, rispondi: []
+Esempio: ["Viale Europa 2, 41051 Castelnuovo Rangone MO", "Via Roma 12, 20121 Milano MI"]
+Se non vedi nessun indirizzo, rispondi: []
 """
 
 
@@ -235,11 +236,15 @@ def _prefer_recipient(righe):
     risultato, salta = [], False
     for r in selezione:
         rl = r.lower()
+        ha_cap = bool(_CAP_RE.search(r))
         if any(m in rl for m in _SND_MARKERS):
-            salta = True
+            # inizio del blocco mittente: se il CAP del mittente è GIÀ su questa
+            # riga, il blocco finisce qui (non saltare oltre, o si perde il
+            # destinatario); altrimenti salta fino al prossimo CAP.
+            salta = not ha_cap
             continue
         if salta:
-            if _CAP_RE.search(r):
+            if ha_cap:
                 salta = False
             continue
         risultato.append(r)
